@@ -83,3 +83,11 @@ func print(s string, wg *sync.WaitGroup) {
 	fmt.Println(s)
 }
 ```
+
+## Race conditions
+
+### Race conditions example
+
+```go
+
+```
