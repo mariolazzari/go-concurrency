@@ -837,3 +837,166 @@ func Test_dineWithVaryingDelays(t *testing.T) {
 ```go
 
 ```
+
+## Channels
+
+### Introduction to channels
+
+```go
+package main
+
+import (
+	"fmt"
+	"strings"
+)
+
+// shout has two parameters: a receive only chan ping, and a send only chan pong.
+// Note the use of <- in function signature. It simply takes whatever
+// string it gets from the ping channel,  converts it to uppercase and
+// appends a few exclamation marks, and then sends the transformed text to the pong channel.
+func shout(ping <-chan string, pong chan<- string) {
+	for {
+		// read from the ping channel. Note that the GoRoutine waits here -- it blocks until
+		// something is received on this channel.
+		s := <-ping
+
+		pong <- fmt.Sprintf("%s!!!", strings.ToUpper(s))
+	}
+}
+
+func main() {
+	// create two channels. Ping is what we send to, and pong is what comes back.
+	ping := make(chan string)
+	pong := make(chan string)
+
+	// start a goroutine
+	go shout(ping, pong)
+
+	fmt.Println("Type something and press ENTER (enter Q to quit)")
+
+	for {
+		// print a prompt
+		fmt.Print("-> ")
+
+		// get user input
+		var userInput string
+		_, _ = fmt.Scanln(&userInput)
+
+		if userInput == strings.ToLower("q") {
+			// jump out of for loop
+			break
+		}
+
+		// send userInput to "ping" channel
+		ping <- userInput
+
+		// wait for a response from the pong channel. Again, program
+		// blocks (pauses) until it receives something from
+		// that channel.
+		response := <-pong
+
+		// print the response to the console.
+		fmt.Println("Response:", response)
+	}
+
+	fmt.Println("All done. Closing channels.")
+
+	// close the channels
+	close(ping)
+	close(pong)
+}
+```
+
+### Select statement
+
+```go
+package main
+
+import (
+	"fmt"
+	"time"
+)
+
+func server1(ch chan string) {
+	for {
+		time.Sleep(6 * time.Second)
+		ch <- "This is from server 1"
+	}
+}
+
+func server2(ch chan string) {
+	for {
+		time.Sleep(3 * time.Second)
+		ch <- "This is from server 2"
+	}
+}
+
+func main() {
+	fmt.Println("Select with channels")
+	fmt.Println("--------------------")
+
+	channel1 := make(chan string)
+	channel2 := make(chan string)
+
+	go server1(channel1)
+	go server2(channel2)
+
+	for {
+		select {
+		// because we have multiple cases listening to
+		// the same channels, random ones are selected
+		case s1 := <-channel1:
+			fmt.Println("Case one:", s1)
+		case s2 := <-channel1:
+			fmt.Println("Case two:", s2)
+		case s3 := <-channel2:
+			fmt.Println("Case three:", s3)
+		case s4 := <-channel2:
+			fmt.Println("Case four:", s4)
+			// default:
+			// avoiding deadlock
+		}
+	}
+
+}
+```
+
+### Buffered channels
+
+```go
+package main
+
+import (
+	"fmt"
+	"time"
+)
+
+func listenToChan(ch chan int) {
+	for {
+		// print a got data message
+		i := <-ch
+		fmt.Println("Got", i, "from channel")
+
+		// simulate doing a lot of work
+		time.Sleep(1 * time.Second)
+	}
+}
+
+func main() {
+	ch := make(chan int, 10)
+
+	go listenToChan(ch)
+
+	for i := 0; i <= 100; i++ {
+		// the first 10 times through this loop, things go quickly; after that, things slow down.
+		fmt.Println("sending", i, "to channel...")
+		ch <- i
+		fmt.Println("sent", i, "to channel!")
+	}
+
+	fmt.Println("Done!")
+	close(ch)
+}
+```
+
+### Sleeping barber
