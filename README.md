@@ -1227,3 +1227,43 @@ type Config struct {
 	Wait     *sync.WaitGroup
 }
 ```
+
+### Routes and handlers
+
+```go
+package main
+
+import (
+	"net/http"
+
+	"github.com/go-chi/chi/v5"
+	"github.com/go-chi/chi/v5/middleware"
+)
+
+func (app *Config) routes() http.Handler {
+	// create router
+	mux := chi.NewRouter()
+
+	// set up middleware
+	mux.Use(middleware.Recoverer)
+
+	// define application routes
+	mux.Get("/", app.HomePage)
+
+	return mux
+}
+```
+
+### Render template
+
+```go
+package main
+
+import "net/http"
+
+func (app *Config) HomePage(w http.ResponseWriter, r *http.Request) {
+	app.render(w, r, "home.page.gohtml", nil)
+}
+```
+
+### Session middleware
