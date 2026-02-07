@@ -1277,3 +1277,390 @@ func (app *Config) SessionLoad(next http.Handler) http.Handler {
 	return app.Session.LoadAndSave(next)
 }
 ```
+
+### Graceful shutdown
+
+```go
+package main
+
+import (
+	"database/sql"
+	"fmt"
+	"log"
+	"net/http"
+	"os"
+	"os/signal"
+	"sync"
+	"syscall"
+	"time"
+
+	"github.com/alexedwards/scs/redisstore"
+	"github.com/alexedwards/scs/v2"
+	"github.com/gomodule/redigo/redis"
+	_ "github.com/jackc/pgconn"
+	_ "github.com/jackc/pgx/v4"
+	_ "github.com/jackc/pgx/v4/stdlib"
+)
+
+const webPort = "80"
+
+func main() {
+	// connect to the database
+	db := initDB()
+
+	// create sessions
+	session := initSession()
+
+	// create loggers
+	infoLog := log.New(os.Stdout, "INFO\t", log.Ldate|log.Ltime)
+	errorLog := log.New(os.Stdout, "ERROR\t", log.Ldate|log.Ltime|log.Lshortfile)
+
+	// create channels
+
+	// create waitgroup
+	wg := sync.WaitGroup{}
+
+	// set up the application config
+	app := Config{
+		Session:  session,
+		DB:       db,
+		InfoLog:  infoLog,
+		ErrorLog: errorLog,
+		Wait:     &wg,
+	}
+
+	// set up mail
+
+	// listen for signals
+	go app.listenForShutdown()
+
+	// listen for web connections
+	app.serve()
+}
+
+func (app *Config) serve() {
+	// start http server
+	srv := &http.Server{
+		Addr:    fmt.Sprintf(":%s", webPort),
+		Handler: app.routes(),
+	}
+
+	app.InfoLog.Println("Starting web server...")
+	err := srv.ListenAndServe()
+	if err != nil {
+		log.Panic(err)
+	}
+}
+
+// initDB connects to Postgres and returns a pool of connections
+func initDB() *sql.DB {
+	conn := connectToDB()
+	if conn == nil {
+		log.Panic("can't connect to database")
+	}
+	return conn
+}
+
+// connectToDB tries to connect to postgres, and backs off until a connection
+// is made, or we have not connected after 10 tries
+func connectToDB() *sql.DB {
+	counts := 0
+
+	dsn := os.Getenv("DSN")
+
+	for {
+		connection, err := openDB(dsn)
+		if err != nil {
+			log.Println("postgres not yet ready...")
+		} else {
+			log.Print("connected to database!")
+			return connection
+		}
+
+		if counts > 10 {
+			return nil
+		}
+
+		log.Print("Backing off for 1 second")
+		time.Sleep(1 * time.Second)
+		counts++
+
+		continue
+	}
+}
+
+// openDB opens a connection to Postgres, using a DSN read
+// from the environment variable DSN
+func openDB(dsn string) (*sql.DB, error) {
+	db, err := sql.Open("pgx", dsn)
+	if err != nil {
+		return nil, err
+	}
+
+	err = db.Ping()
+	if err != nil {
+		return nil, err
+	}
+
+	return db, nil
+}
+
+// initSession sets up a session, using Redis for session store
+func initSession() *scs.SessionManager {
+	// set up session
+	session := scs.New()
+	session.Store = redisstore.New(initRedis())
+	session.Lifetime = 24 * time.Hour
+	session.Cookie.Persist = true
+	session.Cookie.SameSite = http.SameSiteLaxMode
+	session.Cookie.Secure = true
+
+	return session
+}
+
+// initRedis returns a pool of connections to Redis using the
+// environment variable REDIS
+func initRedis() *redis.Pool {
+	redisPool := &redis.Pool{
+		MaxIdle: 10,
+		Dial: func() (redis.Conn, error) {
+			return redis.Dial("tcp", os.Getenv("REDIS"))
+		},
+	}
+
+	return redisPool
+}
+
+func (app *Config) listenForShutdown() {
+	quit := make(chan os.Signal, 1)
+	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
+	<-quit
+	app.shutdown()
+	os.Exit(0)
+}
+
+func (app *Config) shutdown() {
+	// perform any cleanup tasks
+	app.InfoLog.Println("would run cleanup tasks...")
+
+	// block until waitgroup is empty
+	app.Wait.Wait()
+
+	app.InfoLog.Println("closing channels and shutting down application...")
+}
+```
+
+### Populating database
+
+```sql
+--
+-- Name: plans; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.plans (
+                              id integer NOT NULL,
+                              plan_name character varying(255),
+                              plan_amount integer,
+                              created_at timestamp without time zone,
+                              updated_at timestamp without time zone
+);
+
+
+--
+-- Name: plans_id_seq; Type: SEQUENCE; Schema: public; Owner: -
+--
+
+ALTER TABLE public.plans ALTER COLUMN id ADD GENERATED ALWAYS AS IDENTITY (
+    SEQUENCE NAME public.plans_id_seq
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1
+);
+
+
+--
+-- Name: user_id_seq; Type: SEQUENCE; Schema: public; Owner: -
+--
+
+CREATE SEQUENCE public.user_id_seq
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+--
+-- Name: user_plans; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.user_plans (
+                                   id integer NOT NULL,
+                                   user_id integer,
+                                   plan_id integer,
+                                   created_at timestamp without time zone,
+                                   updated_at timestamp without time zone
+);
+
+
+--
+-- Name: user_plans_id_seq; Type: SEQUENCE; Schema: public; Owner: -
+--
+
+ALTER TABLE public.user_plans ALTER COLUMN id ADD GENERATED ALWAYS AS IDENTITY (
+    SEQUENCE NAME public.user_plans_id_seq
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1
+);
+
+
+CREATE TABLE public.users (
+                              id integer DEFAULT nextval('public.user_id_seq'::regclass) NOT NULL,
+                              email character varying(255),
+                              first_name character varying(255),
+                              last_name character varying(255),
+                              password character varying(60),
+                              user_active integer DEFAULT 0,
+                              is_admin integer default 0,
+                              created_at timestamp without time zone,
+                              updated_at timestamp without time zone
+);
+
+
+INSERT INTO "public"."users"("email","first_name","last_name","password","user_active", "is_admin", "created_at","updated_at")
+VALUES
+    (E'admin@example.com',E'Admin',E'User',E'$2a$12$1zGLuYDDNvATh4RA4avbKuheAMpb1svexSzrQm7up.bnpwQHs0jNe',1,1,E'2022-03-14 00:00:00',E'2022-03-14 00:00:00');
+
+SELECT pg_catalog.setval('public.plans_id_seq', 1, false);
+
+
+SELECT pg_catalog.setval('public.user_id_seq', 2, true);
+
+
+SELECT pg_catalog.setval('public.user_plans_id_seq', 1, false);
+
+INSERT INTO "public"."plans"("plan_name","plan_amount","created_at","updated_at")
+VALUES
+    (E'Bronze Plan',1000,E'2022-05-12 00:00:00',E'2022-05-12 00:00:00'),
+    (E'Silver Plan',2000,E'2022-05-12 00:00:00',E'2022-05-12 00:00:00'),
+    (E'Gold Plan',3000,E'2022-05-12 00:00:00',E'2022-05-12 00:00:00');
+
+
+ALTER TABLE ONLY public.plans
+    ADD CONSTRAINT plans_pkey PRIMARY KEY (id);
+
+
+ALTER TABLE ONLY public.user_plans
+    ADD CONSTRAINT user_plans_pkey PRIMARY KEY (id);
+
+
+ALTER TABLE ONLY public.users
+    ADD CONSTRAINT users_pkey PRIMARY KEY (id);
+
+
+ALTER TABLE ONLY public.user_plans
+    ADD CONSTRAINT user_plans_plan_id_fkey FOREIGN KEY (plan_id) REFERENCES public.plans(id) ON UPDATE RESTRICT ON DELETE CASCADE;
+
+
+ALTER TABLE ONLY public.user_plans
+    ADD CONSTRAINT user_plans_user_id_fkey FOREIGN KEY (user_id) REFERENCES public.users(id) ON UPDATE RESTRICT ON DELETE CASCADE;
+```
+
+### Data package
+
+```go
+package data
+
+import (
+	"database/sql"
+	"time"
+)
+
+const dbTimeout = time.Second * 3
+
+var db *sql.DB
+
+// New is the function used to create an instance of the data package. It returns the type
+// Model, which embeds all the types we want to be available to our application.
+func New(dbPool *sql.DB) Models {
+	db = dbPool
+
+	return Models{
+		User: User{},
+		Plan: Plan{},
+	}
+}
+
+// Models is the type for this package. Note that any model that is included as a member
+// in this type is available to us throughout the application, anywhere that the
+// app variable is used, provided that the model is also added in the New function.
+type Models struct {
+	User User
+	Plan Plan
+}
+```
+
+### Login/logout
+
+```go
+func (app *Config) PostLoginPage(w http.ResponseWriter, r *http.Request) {
+	_ = app.Session.RenewToken(r.Context())
+
+	// parse form post
+	err := r.ParseForm()
+	if err != nil {
+		app.ErrorLog.Println(err)
+	}
+
+	// get email and password from form post
+	email := r.Form.Get("email")
+	password := r.Form.Get("password")
+
+	user, err := app.Models.User.GetByEmail(email)
+	if err != nil {
+		app.Session.Put(r.Context(), "error", "Invalid credentials.")
+		http.Redirect(w, r, "/login", http.StatusSeeOther)
+		return
+	}
+
+	// check password
+	validPassword, err := user.PasswordMatches(password)
+	if err != nil {
+		app.Session.Put(r.Context(), "error", "Invalid credentials.")
+		http.Redirect(w, r, "/login", http.StatusSeeOther)
+		return
+	}
+
+	if !validPassword{
+		app.Session.Put(r.Context(), "error", "Invalid credentials.")
+		http.Redirect(w, r, "/login", http.StatusSeeOther)
+		return
+	}
+
+	// okay, so log user in
+	app.Session.Put(r.Context(), "userID", user.ID)
+	app.Session.Put(r.Context(), "user", user)
+
+	app.Session.Put(r.Context(), "flash", "Successful login!")
+
+	// redirect the user
+	http.Redirect(w, r, "/", http.StatusSeeOther)
+}
+
+func (app *Config) Logout(w http.ResponseWriter, r *http.Request) {
+	// clean up session
+	_ = app.Session.Destroy(r.Context())
+	_ = app.Session.RenewToken(r.Context())
+
+	http.Redirect(w, r, "/login", http.StatusSeeOther)
+}
+```
+
+## Sending emails
+
+### Mailer
