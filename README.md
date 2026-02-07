@@ -1901,3 +1901,62 @@ func (app *Config) routes() http.Handler {
 	return mux
 }
 ```
+
+### Sending async mails
+
+```go
+func (app *Config) listenForMail() {
+	for {
+		select {
+		case msg := <- app.Mailer.MailerChan:
+			go app.Mailer.sendMail(msg, app.Mailer.ErrorChan)
+		case err := <- app.Mailer.ErrorChan:
+			app.ErrorLog.Println(err)
+		case <-app.Mailer.DoneChan:
+			return
+		}
+	}
+}
+```
+
+### Mail helper
+
+```go
+package main
+
+func (app *Config) sendEmail(msg Message) {
+	app.Wait.Add(1)
+	app.Mailer.MailerChan <-msg
+}
+```
+
+### Shutdown
+
+```go
+func (app *Config) listenForShutdown() {
+	quit := make(chan os.Signal, 1)
+	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
+	<-quit
+	app.shutdown()
+	os.Exit(0)
+}
+
+func (app *Config) shutdown() {
+	// perform any cleanup tasks
+	app.InfoLog.Println("would run cleanup tasks...")
+
+	// block until waitgroup is empty
+	app.Wait.Wait()
+
+	app.Mailer.DoneChan <- true
+
+	app.InfoLog.Println("closing channels and shutting down application...")
+	close(app.Mailer.MailerChan)
+	close(app.Mailer.ErrorChan)
+	close(app.Mailer.DoneChan)
+}
+```
+
+## User section
+
+### Mail template
