@@ -1664,3 +1664,240 @@ func (app *Config) Logout(w http.ResponseWriter, r *http.Request) {
 ## Sending emails
 
 ### Mailer
+
+[Simple email](https://github.com/xhit/go-simple-mail)
+
+```go
+package main
+
+import (
+	"bytes"
+	"fmt"
+	"html/template"
+	"sync"
+	"time"
+
+	"github.com/vanng822/go-premailer/premailer"
+	mail "github.com/xhit/go-simple-mail/v2"
+)
+
+type Mail struct {
+	Domain      string
+	Host        string
+	Port        int
+	Username    string
+	Password    string
+	Encryption  string
+	FromAddress string
+	FromName    string
+	Wait        *sync.WaitGroup
+	MailerChan  chan Message
+	ErrorChan   chan error
+	DoneChan    chan bool
+}
+
+type Message struct {
+	From        string
+	FromName    string
+	To          string
+	Subject     string
+	Attachments []string
+	Data        any
+	DataMap     map[string]any
+	Template    string
+}
+
+// a function to listen for messages on the MailerChan
+
+func (m *Mail) sendMail(msg Message, errorChan chan error) {
+	if msg.Template == "" {
+		msg.Template = "mail"
+	}
+
+	if msg.From == "" {
+		msg.From = m.FromAddress
+	}
+
+	if msg.FromName == "" {
+		msg.FromName = m.FromName
+	}
+
+	data := map[string]any{
+		"message": msg.Data,
+	}
+
+	msg.DataMap = data
+
+	// build html mail
+	formattedMessage, err := m.buildHTMLMessage(msg)
+	if err != nil {
+		errorChan <- err
+	}
+
+	// build plain text mail
+	plainMessage, err := m.buildPlainTextMessage(msg)
+	if err != nil {
+		errorChan <- err
+	}
+
+	server := mail.NewSMTPClient()
+	server.Host = m.Host
+	server.Port = m.Port
+	server.Username = m.Username
+	server.Password = m.Password
+	server.Encryption = m.getEncryption(m.Encryption)
+	server.KeepAlive = false
+	server.ConnectTimeout = 10 * time.Second
+	server.SendTimeout = 10 * time.Second
+
+	smtpClient, err := server.Connect()
+	if err != nil {
+		errorChan <- err
+	}
+
+	email := mail.NewMSG()
+	email.SetFrom(msg.From).AddTo(msg.To).SetSubject(msg.Subject)
+
+	email.SetBody(mail.TextPlain, plainMessage)
+	email.AddAlternative(mail.TextHTML, formattedMessage)
+
+	if len(msg.Attachments) > 0 {
+		for _, x := range msg.Attachments {
+			email.AddAttachment(x)
+		}
+	}
+
+	err = email.Send(smtpClient)
+	if err != nil {
+		errorChan <- err
+	}
+}
+
+func (m *Mail) buildHTMLMessage(msg Message) (string, error) {
+	templateToRender := fmt.Sprintf("./cmd/web/templates/%s.html.gohtml", msg.Template)
+
+	t, err := template.New("email-html").ParseFiles(templateToRender)
+	if err != nil {
+		return "", err
+	}
+
+	var tpl bytes.Buffer
+	if err = t.ExecuteTemplate(&tpl, "body", msg.DataMap); err != nil {
+		return "", err
+	}
+
+	formattedMessage := tpl.String()
+	formattedMessage, err = m.inlineCSS(formattedMessage)
+	if err != nil {
+		return "", err
+	}
+
+	return formattedMessage, nil
+}
+
+func (m *Mail) buildPlainTextMessage(msg Message) (string, error) {
+	templateToRender := fmt.Sprintf("./cmd/web/templates/%s.plain.gohtml", msg.Template)
+
+	t, err := template.New("email-plain").ParseFiles(templateToRender)
+	if err != nil {
+		return "", err
+	}
+
+	var tpl bytes.Buffer
+	if err = t.ExecuteTemplate(&tpl, "body", msg.DataMap); err != nil {
+		return "", err
+	}
+
+	plainMessage := tpl.String()
+
+	return plainMessage, nil
+}
+
+func (m *Mail) inlineCSS(s string) (string, error) {
+	options := premailer.Options{
+		RemoveClasses: false,
+		CssToAttributes: false,
+		KeepBangImportant: true,
+	}
+
+	prem, err := premailer.NewPremailerFromString(s, &options)
+	if err != nil {
+		return "", err
+	}
+
+	html, err := prem.Transform()
+	if err != nil {
+		return "", err
+	}
+
+	return html, nil
+}
+
+func (m *Mail) getEncryption(e string) mail.Encryption {
+	switch e {
+	case "tls":
+		return mail.EncryptionSTARTTLS
+	case "ssl":
+		return mail.EncryptionSSLTLS
+	case "none":
+		return mail.EncryptionNone
+	default:
+		return mail.EncryptionSTARTTLS
+	}
+}
+```
+
+### Send email sync
+
+```go
+package main
+
+import (
+	"net/http"
+
+	"github.com/go-chi/chi/v5"
+	"github.com/go-chi/chi/v5/middleware"
+)
+
+func (app *Config) routes() http.Handler {
+	// create router
+	mux := chi.NewRouter()
+
+	// set up middleware
+	mux.Use(middleware.Recoverer)
+	mux.Use(app.SessionLoad)
+
+	// define application routes
+	mux.Get("/", app.HomePage)
+
+	mux.Get("/login", app.LoginPage)
+	mux.Post("/login", app.PostLoginPage)
+	mux.Get("/logout", app.Logout)
+	mux.Get("/register", app.RegisterPage)
+	mux.Post("/register", app.PostRegisterPage)
+	mux.Get("/activate-account", app.ActivateAccount)
+
+	mux.Get("/test-email", func(w http.ResponseWriter, r *http.Request) {
+		m := Mail{
+			Domain: "localhost",
+			Host: "localhost",
+			Port: 1025,
+			Encryption: "none",
+			FromAddress: "info@mycompany.com",
+			FromName: "info",
+			ErrorChan: make(chan error),
+
+		}
+
+		msg := Message{
+			To: "me@here.com",
+			Subject: "Test email",
+			Data: "Hello, world.",
+		}
+
+		m.sendMail(msg, make(chan error))
+	})
+
+	return mux
+}
+```
