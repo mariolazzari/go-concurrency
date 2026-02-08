@@ -27,22 +27,23 @@ type Mail struct {
 }
 
 type Message struct {
-	From        string
-	FromName    string
-	To          string
-	Subject     string
-	Attachments []string
-	Data        any
-	DataMap     map[string]any
-	Template    string
+	From          string
+	FromName      string
+	To            string
+	Subject       string
+	Attachments   []string
+	AttachmentMap map[string]string
+	Data          any
+	DataMap       map[string]any
+	Template      string
 }
 
 func (app *Config) listenForMail() {
 	for {
 		select {
-		case msg := <- app.Mailer.MailerChan:
+		case msg := <-app.Mailer.MailerChan:
 			go app.Mailer.sendMail(msg, app.Mailer.ErrorChan)
-		case err := <- app.Mailer.ErrorChan:
+		case err := <-app.Mailer.ErrorChan:
 			app.ErrorLog.Println(err)
 		case <-app.Mailer.DoneChan:
 			return
@@ -52,7 +53,7 @@ func (app *Config) listenForMail() {
 
 func (m *Mail) sendMail(msg Message, errorChan chan error) {
 	defer m.Wait.Done()
-	
+
 	if msg.Template == "" {
 		msg.Template = "mail"
 	}
@@ -64,12 +65,20 @@ func (m *Mail) sendMail(msg Message, errorChan chan error) {
 	if msg.FromName == "" {
 		msg.FromName = m.FromName
 	}
-
-	data := map[string]any{
-		"message": msg.Data,
+	
+	if msg.AttachmentMap == nil {
+		msg.AttachmentMap = make(map[string]string)
 	}
 
-	msg.DataMap = data
+	// data := map[string]any{
+	// 	"message": msg.Data,
+	// }
+
+	if len(msg.DataMap) == 0 {
+		msg.DataMap = make(map[string]any)
+	}
+
+	msg.DataMap["message"] = msg.Data
 
 	// build html mail
 	formattedMessage, err := m.buildHTMLMessage(msg)
@@ -107,6 +116,12 @@ func (m *Mail) sendMail(msg Message, errorChan chan error) {
 	if len(msg.Attachments) > 0 {
 		for _, x := range msg.Attachments {
 			email.AddAttachment(x)
+		}
+	}
+
+	if len(msg.AttachmentMap) > 0 {
+		for key, value := range msg.AttachmentMap {
+			email.AddAttachment(value, key)
 		}
 	}
 
@@ -158,8 +173,8 @@ func (m *Mail) buildPlainTextMessage(msg Message) (string, error) {
 
 func (m *Mail) inlineCSS(s string) (string, error) {
 	options := premailer.Options{
-		RemoveClasses: false,
-		CssToAttributes: false,
+		RemoveClasses:     false,
+		CssToAttributes:   false,
 		KeepBangImportant: true,
 	}
 
