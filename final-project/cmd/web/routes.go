@@ -17,7 +17,6 @@ func (app *Config) routes() http.Handler {
 
 	// define application routes
 	mux.Get("/", app.HomePage)
-
 	mux.Get("/login", app.LoginPage)
 	mux.Post("/login", app.PostLoginPage)
 	mux.Get("/logout", app.Logout)
@@ -25,6 +24,7 @@ func (app *Config) routes() http.Handler {
 	mux.Post("/register", app.PostRegisterPage)
 	mux.Get("/activate", app.ActivateAccount)
 
+	// mount secure routes as its own router
 	mux.Mount("/members", app.authRouter())
 
 	return mux

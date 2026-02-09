@@ -2403,5 +2403,198 @@ func (app *Config) ChooseSubscription(w http.ResponseWriter, r *http.Request) {
 ### Setup test
 
 ```go
+package main
 
+import (
+	"encoding/gob"
+	"final-project/data"
+	"log"
+	"net/http"
+	"os"
+	"sync"
+	"testing"
+	"time"
+
+	"github.com/alexedwards/scs/v2"
+)
+
+
+var testApp Config
+
+func TestMain(m *testing.M) {
+	gob.Register(data.User{})
+
+	// set up session
+	session := scs.New()
+	session.Lifetime = 24 * time.Hour
+	session.Cookie.Persist = true
+	session.Cookie.SameSite = http.SameSiteLaxMode
+	session.Cookie.Secure = true
+
+	testApp = Config{
+		Session: session,
+		DB: nil,
+		InfoLog: log.New(os.Stdout, "INFO\t", log.Ldate|log.Ltime),
+		ErrorLog: log.New(os.Stdout, "ERROR\t", log.Ldate|log.Ltime|log.Lshortfile),
+		Wait: &sync.WaitGroup{},
+		ErrorChan: make(chan error),
+		ErrorChanDone: make(chan bool),
+	}
+
+	// create a dummy mailer
+	errorChan := make(chan error)
+	mailerChan := make(chan Message, 100)
+	mailerDoneChan := make(chan bool)
+
+	testApp.Mailer = Mail {
+		Wait: testApp.Wait,
+		ErrorChan: errorChan,
+		MailerChan: mailerChan,
+		DoneChan: mailerDoneChan,
+	}
+
+	go func() {
+		select{
+		case <-testApp.Mailer.MailerChan:
+		case <-testApp.Mailer.ErrorChan:
+		case <-testApp.Mailer.DoneChan:
+			return
+		}
+	}()
+
+	go func() {
+		for {
+			select{
+			case err := <-testApp.ErrorChan:
+				testApp.ErrorLog.Println(err)
+			case <-testApp.ErrorChanDone:
+				return
+			}
+		}
+	}()
+
+	os.Exit(m.Run())
+}
 ```
+
+### Testong routes
+
+```go
+package main
+
+import (
+	"net/http"
+	"testing"
+
+	"github.com/go-chi/chi/v5"
+)
+
+var routes = []string{
+	"/",
+	"/login",
+	"/logout",
+	"/register",
+	"/activate",
+	"/members/plans",
+	"/members/subscribe",
+}
+
+func Test_Routes_Exist(t *testing.T) {
+	testRoutes := testApp.routes()
+
+	chiRoutes := testRoutes.(chi.Router)
+
+	for _, route := range routes{
+		routeExists(t, chiRoutes, route)
+	}
+}
+
+func routeExists(t *testing.T, routes chi.Router, route string) {
+	found := false
+
+	_ = chi.Walk(routes, func(method string, foundRoute string, handler http.Handler, middlewares ...func(http.Handler) http.Handler) error {
+		if route == foundRoute {
+			found = true
+		}
+		return nil
+	})
+
+	if !found {
+		t.Errorf("did not find %s in registered routes", route)
+	}
+}
+```
+
+### Testing renderer
+
+```go
+package main
+
+import (
+	"net/http"
+	"net/http/httptest"
+	"testing"
+)
+
+func TestConfig_AddDefaultData(t *testing.T) {
+	req, _ := http.NewRequest("GET", "/", nil)
+	ctx := getCtx(req)
+	req = req.WithContext(ctx)
+
+	testApp.Session.Put(ctx, "flash", "flash")
+	testApp.Session.Put(ctx, "warning", "warning")
+	testApp.Session.Put(ctx, "error", "error")
+
+	td := testApp.AddDefaultData(&TemplateData{}, req)
+
+	if td.Flash != "flash" {
+		t.Error("failed to get flash data")
+	}
+
+	if td.Warning != "warning" {
+		t.Error("failed to get warning data")
+	}
+
+	if td.Error != "error" {
+		t.Error("failed to get error data")
+	}
+}
+
+func TestConfig_IsAuthenticated(t *testing.T) {
+	req, _ := http.NewRequest("GET", "/", nil)
+	ctx := getCtx(req)
+	req = req.WithContext(ctx)
+
+	auth := testApp.IsAuthenticated(req)
+
+	if auth {
+		t.Error("returns true for authenticated, when it should be false")
+	}
+
+	testApp.Session.Put(ctx, "userID", 1)
+
+	auth = testApp.IsAuthenticated(req)
+
+	if !auth {
+		t.Error("returns false for authenticated, when it should be true")
+	}
+}
+
+func TestConfig_render(t *testing.T) {
+	pathToTemplates = "./templates"
+
+	rr := httptest.NewRecorder()
+
+	req, _ := http.NewRequest("GET", "/", nil)
+	ctx := getCtx(req)
+	req = req.WithContext(ctx)
+
+	testApp.render(rr, req, "home.page.gohtml", &TemplateData{})
+
+	if rr.Code != 200 {
+		t.Error("failed to render page")
+	}
+}
+```
+
+### Data package
