@@ -78,7 +78,7 @@ func (u *UserTest) GetOne(id int) (*User, error) {
 
 // Update updates one user in the database, using the information
 // stored in the receiver u
-func (u *UserTest) Update() error {
+func (u *UserTest) Update(user User) error {
 	return nil
 }
 
@@ -122,11 +122,11 @@ func (p *PlanTest) GetAll() ([]*Plan, error) {
 	var plans []*Plan
 
 	plan := Plan{
-		ID: 1,
-		PlanName: "Bronze Plan",
+		ID:         1,
+		PlanName:   "Bronze Plan",
 		PlanAmount: 1000,
-		CreatedAt: time.Now(),
-		UpdatedAt: time.Now(),
+		CreatedAt:  time.Now(),
+		UpdatedAt:  time.Now(),
 	}
 
 	plans = append(plans, &plan)
@@ -137,11 +137,11 @@ func (p *PlanTest) GetAll() ([]*Plan, error) {
 // GetOne returns one plan by id
 func (p *PlanTest) GetOne(id int) (*Plan, error) {
 	plan := Plan{
-		ID: 1,
-		PlanName: "Bronze Plan",
+		ID:         1,
+		PlanName:   "Bronze Plan",
 		PlanAmount: 1000,
-		CreatedAt: time.Now(),
-		UpdatedAt: time.Now(),
+		CreatedAt:  time.Now(),
+		UpdatedAt:  time.Now(),
 	}
 
 	return &plan, nil
